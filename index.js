@@ -10,9 +10,6 @@ const client = new Client({
   ],
 });
 
-// =====================================
-// CONFIG
-// =====================================
 const PREFIX = process.env.PREFIX || "!";
 
 const SERVERS = {
@@ -22,7 +19,7 @@ const SERVERS = {
   },
   smrp: {
     name: "SatuMimpi Roleplay",
-    endpoint: "49.128.187.46:30120", // Jalur penyelamat otomatis IP asli
+    endpoint: "49.128.187.46:30120", // Jalur penyelamat otomatis IP asli jika Cfx down
   },
   ckrp: {
     name: "Cerita Kita Roleplay",
@@ -38,47 +35,59 @@ const SERVERS = {
   },
 };
 
-// =====================================
-// CACHE & STICKY PROXY
-// =====================================
 const cache = {};
 let lastWorkingProxy = null; // Menyimpan proxy Indonesia terakhir yang sukses agar performa instan
 
-// =====================================
-// INDONESIAN PROXY BYPASSER (Solusi Geoblock Railway)
-// =====================================
-async function fetchWithIndonesianProxy(url) {
+async function fetchWithParallelProxies(url) {
   let proxies = [];
+
+  // Mencoba mengambil dari ProxyScrape API v2 (Real-time un-cached, diperbarui tiap menit)
   try {
-    // Ambil daftar proxy HTTP Indonesia terupdate dari CDN ProxyScrape
-    console.log("[PROXY FETCH] Mengambil daftar proxy aktif Indonesia...");
+    console.log("[PROXY] Mengambil daftar proxy ID segar dari API v2...");
     const res = await axios.get(
-      "https://cdn.jsdelivr.net/gh/proxyscrape/free-proxy-list@main/proxies/countries/id/http/data.txt",
-      { timeout: 4000 },
+      "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=id&ssl=all&anonymity=all",
+      { timeout: 3000 },
     );
     proxies = res.data
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.includes(":"));
   } catch (err) {
-    console.error(
-      "[PROXY FETCH ERROR] Gagal mengunduh daftar proxy Indonesia:",
-      err.message,
-    );
-    return null;
+    console.log("[PROXY] Gagal menggunakan API v2, mencoba API v4...");
+    try {
+      const res = await axios.get(
+        "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text&country=id&proxy_type=http",
+        { timeout: 3000 },
+      );
+      proxies = res.data
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.includes(":"));
+    } catch (err2) {
+      console.log(
+        "[PROXY] Semua API proxy gratis sedang sibuk/gagal dijangkau.",
+      );
+    }
   }
 
-  // Coba maksimal 10 proxy Indonesia teratas untuk efisiensi waktu
-  const limit = Math.min(proxies.length, 10);
-  for (let i = 0; i < limit; i++) {
-    const [host, port] = proxies[i].split(":");
+  // Bersihkan data duplikat dan ambil 15 proxy teratas untuk diadu secara paralel
+  proxies = [...new Set(proxies)].slice(0, 15);
+  if (proxies.length === 0) return null;
+
+  console.log(
+    `[PROXY] Memulai balapan paralel dengan ${proxies.length} proxy Indonesia...`,
+  );
+
+  // Fungsi pembungkus request proxy tunggal
+  const requestWithProxy = async (proxyStr) => {
+    const [host, port] = proxyStr.split(":");
     try {
-      console.log(`[PROXY TRY] Mencoba proxy ID ke-${i + 1}: ${host}:${port}`);
       const response = await axios.get(url, {
-        timeout: 3000,
+        timeout: 4500, // Timeout 4.5 detik per proxy agar balapan tidak menggantung terlalu lama
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+          Accept: "application/json, text/plain, */*",
         },
         proxy: {
           protocol: "http",
@@ -86,50 +95,59 @@ async function fetchWithIndonesianProxy(url) {
           port: parseInt(port),
         },
       });
+
+      // Validasi response untuk memastikan data valid
       if (response.data) {
         console.log(
-          `[PROXY SUCCESS] Berhasil menembus blokir menggunakan proxy: ${host}:${port}`,
+          `[PROXY CHAMPION] Proxy ${host}:${port} berhasil mengembalikan data terlebih dahulu!`,
         );
-        lastWorkingProxy = { host, port: parseInt(port) }; // Simpan ke Sticky Cache
+        lastWorkingProxy = { host, port: parseInt(port) }; // Simpan sebagai sticky proxy
         return response.data;
       }
+      throw new Error("Data kosong");
     } catch (err) {
-      // Gagal pada proxy ini, abaikan dan lanjut ke proxy berikutnya
+      throw err; // Lempar error agar Promise.any mencari pemenang lain
     }
+  };
+
+  // Jalankan balapan paralel menggunakan Promise.any (Sangat cepat dan instan!)
+  try {
+    const fastestResult = await Promise.any(
+      proxies.map((p) => requestWithProxy(p)),
+    );
+    return fastestResult;
+  } catch (err) {
+    console.log(
+      "[PROXY ERROR] Semua proxy dalam balapan paralel gagal menembus geoblock.",
+    );
+    return null;
   }
-  return null;
 }
 
-// =====================================
-// FETCH JSON (Alur Deteksi Berlapis)
-// =====================================
 async function fetchJSON(url) {
-  // ALUR 1: Mencoba koneksi langsung ke server tujuan (Sempurna saat berjalan di PC Lokal)
+  // ALUR 1: Mencoba koneksi langsung (Sempurna dan instan saat berjalan di PC Lokal Anda)
   try {
     const response = await axios.get(url, {
-      timeout: 3000,
+      timeout: 2500,
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         Accept: "application/json, text/plain, */*",
       },
     });
-
-    if (response.data) {
-      return response.data;
-    }
+    if (response.data) return response.data;
   } catch (err) {
-    // Abaikan error langsung jika berada di cloud/Railway, lanjut menggunakan proxy penyelamat
+    // Abaikan error langsung jika berada di cloud/Railway
   }
 
-  // ALUR 2: Coba gunakan Sticky Proxy Indonesia yang terakhir sukses (Menjaga performa tetap instan)
+  // ALUR 2: Coba gunakan Sticky Proxy Indonesia yang terakhir sukses (Menjaga performa tetap di bawah 100ms)
   if (lastWorkingProxy) {
     try {
       console.log(
         `[PROXY STICKY] Menggunakan proxy sukses terakhir: ${lastWorkingProxy.host}:${lastWorkingProxy.port}`,
       );
       const response = await axios.get(url, {
-        timeout: 3500,
+        timeout: 2500,
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -140,34 +158,23 @@ async function fetchJSON(url) {
           port: lastWorkingProxy.port,
         },
       });
-      if (response.data) {
-        return response.data;
-      }
+      if (response.data) return response.data;
     } catch (err) {
-      console.log(`[PROXY STICKY EXP] Proxy terakhir mati. Menghapus cache.`);
-      lastWorkingProxy = null; // Sticky proxy mati, hapus dari memori agar diganti yang baru
+      console.log(
+        `[PROXY STICKY] Proxy terakhir mati. Menghapus cache sticky.`,
+      );
+      lastWorkingProxy = null;
     }
   }
 
-  // ALUR 3: Pindai proxy Indonesia baru secara dinamis
-  const proxyBypassData = await fetchWithIndonesianProxy(url);
+  // ALUR 3: Pindai proxy Indonesia baru secara dinamis menggunakan sistem balapan paralel
+  const proxyBypassData = await fetchWithParallelProxies(url);
   if (proxyBypassData) return proxyBypassData;
 
   // ALUR 4: Cadangan Terakhir menggunakan Proxy AllOrigins
   try {
     const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-    const response = await axios.get(proxyUrl, { timeout: 4000 });
-    if (response.data) {
-      let parsed = response.data;
-      if (typeof parsed === "string") parsed = JSON.parse(parsed);
-      return parsed;
-    }
-  } catch (err) {}
-
-  // ALUR 5: Cadangan Alternatif menggunakan CorsProxy.io
-  try {
-    const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(url)}`;
-    const response = await axios.get(proxyUrl, { timeout: 4000 });
+    const response = await axios.get(proxyUrl, { timeout: 3000 });
     if (response.data) {
       let parsed = response.data;
       if (typeof parsed === "string") parsed = JSON.parse(parsed);
@@ -178,9 +185,6 @@ async function fetchJSON(url) {
   return null;
 }
 
-// =====================================
-// GET PLAYERS
-// =====================================
 async function getPlayers(serverKey) {
   const server = SERVERS[serverKey];
   if (!server) return { error: "Server tidak terdaftar di konfigurasi bot." };
@@ -288,16 +292,10 @@ async function getPlayers(serverKey) {
   };
 }
 
-// =====================================
-// READY
-// =====================================
 client.once("ready", () => {
   console.log(`✅ Bot online: ${client.user.tag}`);
 });
 
-// =====================================
-// FORMAT PLAYER
-// =====================================
 function formatPlayerLine(player) {
   let pingIcon = "🟢";
   if (player.ping >= 90) {
@@ -313,9 +311,6 @@ function formatPlayerLine(player) {
   return `${pingIcon} ${idStr} ${nameStr} | ${pingStr}`;
 }
 
-// =====================================
-// COMMAND HANDLER
-// =====================================
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!message.content.startsWith(PREFIX)) return;
@@ -323,9 +318,6 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(PREFIX.length).trim().split(/\s+/);
   const command = args.shift()?.toLowerCase();
 
-  // =====================================
-  // !server
-  // =====================================
   if (command === "server") {
     let text = "📡 Available Servers\n\n";
     Object.keys(SERVERS).forEach((key) => {
@@ -334,9 +326,6 @@ client.on("messageCreate", async (message) => {
     return message.reply(text);
   }
 
-  // =====================================
-  // !allplayer
-  // =====================================
   if (command === "allplayer") {
     const serverKey = args[0]?.toLowerCase();
 
@@ -418,9 +407,6 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // =====================================
-  // !player
-  // =====================================
   if (command === "player") {
     const serverKey = args[0]?.toLowerCase();
     const keyword = args.slice(1).join(" ");
@@ -491,7 +477,4 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-// =====================================
-// LOGIN
-// =====================================
 client.login(process.env.DISCORD_TOKEN);
