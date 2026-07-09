@@ -22,9 +22,7 @@ const SERVERS = {
   },
   smrp: {
     name: "SatuMimpi Roleplay",
-    useCfx: true,
-    cfxId: "3e3gdb",
-    endpoint: "49.128.187.46:30120", // Ditambahkan IP asli sebagai jalur penyelamat otomatis
+    endpoint: "49.128.187.46:30120", // Jalur penyelamat otomatis IP asli
   },
   ckrp: {
     name: "Cerita Kita Roleplay",
@@ -41,18 +39,75 @@ const SERVERS = {
 };
 
 // =====================================
-// CACHE
+// CACHE & STICKY PROXY
 // =====================================
 const cache = {};
+let lastWorkingProxy = null; // Menyimpan proxy Indonesia terakhir yang sukses agar performa instan
 
 // =====================================
-// FETCH JSON (Ditingkatkan dengan Proxy Bypasser)
+// INDONESIAN PROXY BYPASSER (Solusi Geoblock Railway)
+// =====================================
+async function fetchWithIndonesianProxy(url) {
+  let proxies = [];
+  try {
+    // Ambil daftar proxy HTTP Indonesia terupdate dari CDN ProxyScrape
+    console.log("[PROXY FETCH] Mengambil daftar proxy aktif Indonesia...");
+    const res = await axios.get(
+      "https://cdn.jsdelivr.net/gh/proxyscrape/free-proxy-list@main/proxies/countries/id/http/data.txt",
+      { timeout: 4000 },
+    );
+    proxies = res.data
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.includes(":"));
+  } catch (err) {
+    console.error(
+      "[PROXY FETCH ERROR] Gagal mengunduh daftar proxy Indonesia:",
+      err.message,
+    );
+    return null;
+  }
+
+  // Coba maksimal 10 proxy Indonesia teratas untuk efisiensi waktu
+  const limit = Math.min(proxies.length, 10);
+  for (let i = 0; i < limit; i++) {
+    const [host, port] = proxies[i].split(":");
+    try {
+      console.log(`[PROXY TRY] Mencoba proxy ID ke-${i + 1}: ${host}:${port}`);
+      const response = await axios.get(url, {
+        timeout: 3000,
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        },
+        proxy: {
+          protocol: "http",
+          host: host,
+          port: parseInt(port),
+        },
+      });
+      if (response.data) {
+        console.log(
+          `[PROXY SUCCESS] Berhasil menembus blokir menggunakan proxy: ${host}:${port}`,
+        );
+        lastWorkingProxy = { host, port: parseInt(port) }; // Simpan ke Sticky Cache
+        return response.data;
+      }
+    } catch (err) {
+      // Gagal pada proxy ini, abaikan dan lanjut ke proxy berikutnya
+    }
+  }
+  return null;
+}
+
+// =====================================
+// FETCH JSON (Alur Deteksi Berlapis)
 // =====================================
 async function fetchJSON(url) {
-  // ALUR 1: Mencoba koneksi langsung ke server tujuan
+  // ALUR 1: Mencoba koneksi langsung ke server tujuan (Sempurna saat berjalan di PC Lokal)
   try {
     const response = await axios.get(url, {
-      timeout: 5000,
+      timeout: 3000,
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -64,53 +119,61 @@ async function fetchJSON(url) {
       return response.data;
     }
   } catch (err) {
-    // Abaikan error langsung, lanjut menggunakan Proxy penyelamat
+    // Abaikan error langsung jika berada di cloud/Railway, lanjut menggunakan proxy penyelamat
   }
 
-  // ALUR 2: Jika terblokir, tembak melalui Proxy AllOrigins (Melalui Server Global non-hosting)
+  // ALUR 2: Coba gunakan Sticky Proxy Indonesia yang terakhir sukses (Menjaga performa tetap instan)
+  if (lastWorkingProxy) {
+    try {
+      console.log(
+        `[PROXY STICKY] Menggunakan proxy sukses terakhir: ${lastWorkingProxy.host}:${lastWorkingProxy.port}`,
+      );
+      const response = await axios.get(url, {
+        timeout: 3500,
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        },
+        proxy: {
+          protocol: "http",
+          host: lastWorkingProxy.host,
+          port: lastWorkingProxy.port,
+        },
+      });
+      if (response.data) {
+        return response.data;
+      }
+    } catch (err) {
+      console.log(`[PROXY STICKY EXP] Proxy terakhir mati. Menghapus cache.`);
+      lastWorkingProxy = null; // Sticky proxy mati, hapus dari memori agar diganti yang baru
+    }
+  }
+
+  // ALUR 3: Pindai proxy Indonesia baru secara dinamis
+  const proxyBypassData = await fetchWithIndonesianProxy(url);
+  if (proxyBypassData) return proxyBypassData;
+
+  // ALUR 4: Cadangan Terakhir menggunakan Proxy AllOrigins
   try {
     const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-    const response = await axios.get(proxyUrl, {
-      timeout: 6000,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-      },
-    });
-
+    const response = await axios.get(proxyUrl, { timeout: 4000 });
     if (response.data) {
       let parsed = response.data;
-      // AllOrigins terkadang mengembalikan data mentah string, kita parse ke JSON
-      if (typeof parsed === "string") {
-        parsed = JSON.parse(parsed);
-      }
+      if (typeof parsed === "string") parsed = JSON.parse(parsed);
       return parsed;
     }
-  } catch (err) {
-    // Lanjut ke proxy cadangan berikutnya jika AllOrigins sibuk
-  }
+  } catch (err) {}
 
-  // ALUR 3: Cadangan Terakhir menggunakan CorsProxy.io
+  // ALUR 5: Cadangan Alternatif menggunakan CorsProxy.io
   try {
     const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(url)}`;
-    const response = await axios.get(proxyUrl, {
-      timeout: 6000,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-      },
-    });
-
+    const response = await axios.get(proxyUrl, { timeout: 4000 });
     if (response.data) {
       let parsed = response.data;
-      if (typeof parsed === "string") {
-        parsed = JSON.parse(parsed);
-      }
+      if (typeof parsed === "string") parsed = JSON.parse(parsed);
       return parsed;
     }
-  } catch (err) {
-    // Semua alur buntu
-  }
+  } catch (err) {}
 
   return null;
 }
@@ -130,7 +193,7 @@ async function getPlayers(serverKey) {
   let players = null;
   let diagnosticLog = "";
 
-  // JALUR 1: Jika server menggunakan Cfx ID, telusuri API Cfx & Proxy Cfx
+  // JALUR 1: Jika server menggunakan Cfx ID
   if (server.useCfx && server.cfxId) {
     diagnosticLog += `👉 Mode: CfxId (${server.cfxId})\n`;
 
