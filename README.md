@@ -10,10 +10,7 @@ A tool for finding players. Add a brief description of its purpose, target users
 
 ## Tech Stack
 
-- **Language:** [e.g., TypeScript]
-- **Framework:** [e.g., React]
-- **Backend:** [e.g., Node.js]
-- **Database:** [e.g., PostgreSQL]
+- **Language:** [HTML, CSS, Javascript]
 
 ## Setup
 
