@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "node .": "node run index.js"
+    "dev": "node --watch index.js"
   },
   "repository": {
     "type": "git",
@@ -17,6 +17,7 @@
   "type": "commonjs",
   "dependencies": {
     "axios": "^1.16.1",
+    "cfx-api": "^2.0.1",
     "cheerio": "^1.2.0",
     "discord.js": "^14.26.4",
     "dotenv": "^17.4.2"
